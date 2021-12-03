@@ -29,14 +29,14 @@ class BertEmbedding(nn.Module):
         return output.last_hidden_state
 
 
-class NGramEncoder(nn.Module):
+class NGramEmbedding(nn.Module):
     def __init__(
             self,
             embedding_dimension: int,
             kernel_dim: int,
             kernel_sizes: List[int] = None
     ):
-        super(NGramEncoder, self).__init__()
+        super(NGramEmbedding, self).__init__()
 
         if kernel_sizes is None:
             kernel_sizes = [1, 3, 5]
@@ -89,12 +89,9 @@ class EmbeddingCombination(nn.Module):
 
 
 class TypeEmbedding(nn.Module):
-    def __init__(self, pretrained_bert_model: str, num_types: int, out_dim: int):
+    def __init__(self, pretrained_bert_model: str):
         super(TypeEmbedding, self).__init__()
         self.embedding = BertEmbedding(pretrained=pretrained_bert_model)
-        self.combined_embedding_dim = 768 * num_types
-        self.output_embedding_dim = out_dim
-        self.combination = nn.Linear(self.combined_embedding_dim, self.output_embedding_dim)
 
     def forward(self, type_inputs: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]) -> torch.Tensor:
 
@@ -111,23 +108,22 @@ class TypeEmbedding(nn.Module):
         # BERT gives a Tensor of shape (batch_size, sequence_length, hidden_dim)
         # We create a type embedding by taking mean over the token embeddings of each token in the type
         type_embeddings_list = [torch.mean(type_embedding, dim=1) for type_embedding in type_embeddings_list]
-        # Then concatenate the type embeddings
-        type_embedding: torch.Tensor = torch.cat(type_embeddings_list, dim=1)
-        # The final type embedding is obtained after passing through  a Linear layer
-        type_embedding = self.combination(type_embedding)
+        # Then concatenate the type embeddings and take the mean
+        type_embedding: torch.Tensor = torch.mean(torch.cat(type_embeddings_list, dim=0), dim=0).unsqueeze(dim=0)
+
         return type_embedding
 
 
-class TextEncoder(nn.Module):
+class TextEmbedding(nn.Module):
     def __init__(
             self,
             pretrained_bert_model: str,
             out_dim: int,
             n_gram_sizes: List[int] = None,
     ):
-        super(TextEncoder, self).__init__()
+        super(TextEmbedding, self).__init__()
         self.embedding = BertEmbedding(pretrained=pretrained_bert_model)
-        self.encoder = NGramEncoder(embedding_dimension=768, kernel_dim=out_dim, kernel_sizes=n_gram_sizes)
+        self.encoder = NGramEmbedding(embedding_dimension=768, kernel_dim=out_dim, kernel_sizes=n_gram_sizes)
         self.combined_embedding_dim = self.encoder.embedding_dimension + 768
         self.output_embedding_dim = out_dim
         self.combination = EmbeddingCombination(input_dim=self.combined_embedding_dim, output_dim=self.output_embedding_dim)
@@ -137,26 +133,25 @@ class TextEncoder(nn.Module):
             input_ids: torch.Tensor,
             attention_mask: torch.Tensor = None,
             token_type_ids: torch.Tensor = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor,torch.Tensor]:
+    ) -> torch.Tensor:
         bert_embedding: torch.Tensor = self.embedding(input_ids, attention_mask, token_type_ids)
         ngram_embedding: torch.Tensor = self.encoder(bert_embedding)
         combined_embedding: torch.Tensor = self.combination([bert_embedding, ngram_embedding])
-        return bert_embedding, ngram_embedding, combined_embedding
+        return combined_embedding
 
 
-class EntityEncoder(nn.Module):
+class EntityEmbedding(nn.Module):
     def __init__(
             self,
             pretrained_bert_model: str,
-            num_types: int,
             out_dim: int,
             n_gram_sizes: List[int] = None
     ):
-        super(EntityEncoder, self).__init__()
-        self.desc_encoder = TextEncoder(pretrained_bert_model=pretrained_bert_model, n_gram_sizes=n_gram_sizes, out_dim=out_dim)
+        super(EntityEmbedding, self).__init__()
+        self.desc_encoder = TextEmbedding(pretrained_bert_model=pretrained_bert_model, n_gram_sizes=n_gram_sizes, out_dim=out_dim)
         self.name_encoder = BertEmbedding(pretrained=pretrained_bert_model)
-        self.type_encoder = TypeEmbedding(pretrained_bert_model=pretrained_bert_model, num_types=num_types, out_dim=out_dim)
-        self.combined_embedding_dim = out_dim + 768 + out_dim
+        self.type_encoder = TypeEmbedding(pretrained_bert_model=pretrained_bert_model)
+        self.combined_embedding_dim = out_dim + 768 + 768
         self.output_embedding_dim = out_dim
         self.combination = nn.Linear(self.combined_embedding_dim, self.output_embedding_dim)
 
@@ -171,12 +166,12 @@ class EntityEncoder(nn.Module):
         # Unpack the description tensors
         desc_input_ids, desc_attention_mask, desc_token_type_ids = description_inputs
         # Encode the description
-        bert_desc_embedding , ngram_desc_embedding, _ = self.desc_encoder(
+        desc_embedding: torch.Tensor = self.desc_encoder(
             input_ids=desc_input_ids,
             attention_mask=desc_attention_mask,
             token_type_ids=desc_token_type_ids
         )
-        desc_embedding: torch.Tensor = torch.cat((bert_desc_embedding, ngram_desc_embedding), dim=1)
+
 
         # Unpack the name tensors
         name_input_ids, name_attention_mask, name_token_type_ids = name_inputs
@@ -201,16 +196,15 @@ class EntityEncoder(nn.Module):
         return entity_embedding
 
 
-class EntitySimilarityModel(nn.Module):
+class ContextualEntityEmbedding(nn.Module):
     def __init__(
             self,
             pretrained_bert_model: str,
-            num_types: int,
             out_dim: int,
             n_gram_sizes: List[int] = None):
-        super(EntitySimilarityModel, self).__init__()
-        self.context_encoder = TextEncoder(pretrained_bert_model=pretrained_bert_model, out_dim=out_dim, n_gram_sizes=n_gram_sizes)
-        self.entity_encoder = EntityEncoder(pretrained_bert_model=pretrained_bert_model, num_types=num_types, out_dim=out_dim, n_gram_sizes=n_gram_sizes)
+        super(ContextualEntityEmbedding, self).__init__()
+        self.context_encoder = TextEmbedding(pretrained_bert_model=pretrained_bert_model, out_dim=out_dim, n_gram_sizes=n_gram_sizes)
+        self.entity_encoder = EntityEmbedding(pretrained_bert_model=pretrained_bert_model, out_dim=out_dim, n_gram_sizes=n_gram_sizes)
 
 
     def forward(
@@ -274,9 +268,6 @@ def main():
     e2_name = data_dict['doc2']['entity_name']
     e2_types = data_dict['doc2']['entity_types']
 
-    num_types = min(len(e1_types), len(e2_types))
-    e1_types = e1_types[:num_types]
-    e2_types = e2_types[:num_types]
 
     context_inputs = create_bert_input(context, tokenizer)
 
@@ -288,15 +279,15 @@ def main():
     e2_name_inputs = create_bert_input(e2_name, tokenizer)
     e2_type_inputs = [create_bert_input(e2_type, tokenizer) for e2_type in e2_types]
 
-    model = EntitySimilarityModel(pretrained_bert_model=pretrain, num_types=num_types, out_dim=100, n_gram_sizes=[1, 2, 3])
+    model = ContextualEntityEmbedding(pretrained_bert_model=pretrain, out_dim=100, n_gram_sizes=[1, 2, 3])
     model.to(device)
     model.train()
-    embedding1 = model(context_inputs=context_inputs, description_inputs=e1_desc_inputs,
+    e1_embedding = model(context_inputs=context_inputs, description_inputs=e1_desc_inputs,
                        name_inputs=e1_name_inputs, type_inputs=e1_type_inputs)
-    embedding2 = model(context_inputs=context_inputs, description_inputs=e2_desc_inputs, name_inputs=e2_name_inputs,
+    e2_embedding = model(context_inputs=context_inputs, description_inputs=e2_desc_inputs, name_inputs=e2_name_inputs,
                        type_inputs=e2_type_inputs)
 
-    score = torch.cosine_similarity(embedding1, embedding2)
+    score = torch.cosine_similarity(e1_embedding, e2_embedding)
     print('Score = {}'.format(score))
 
 
