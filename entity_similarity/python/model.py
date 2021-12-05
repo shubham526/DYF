@@ -1,11 +1,14 @@
 from typing import Tuple, List
 import torch
+print(torch.__version__)
 import math
 import numpy as np
 import torch.nn as nn
 from transformers import AutoConfig, AutoModel, DistilBertModel, AutoTokenizer, get_linear_schedule_with_warmup
 import warnings
 import json
+from dataset import EntitySimilarityDataset
+from dataloader import EntitySimilarityDataLoader
 
 class BertEmbedding(nn.Module):
     def __init__(self, pretrained: str) -> None:
@@ -16,16 +19,8 @@ class BertEmbedding(nn.Module):
         self.bert = AutoModel.from_pretrained(self.pretrained, config=self.config)
 
 
-    def forward(self,
-                input_ids: torch.Tensor,
-                attention_mask: torch.Tensor = None,
-                token_type_ids: torch.Tensor = None) -> torch.Tensor:
-
-        if token_type_ids is not None:
-            output = self.bert(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
-        else:
-            output = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-
+    def forward(self,input_ids: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
+        output = self.bert(input_ids=input_ids, attention_mask=attention_mask)
         return output.last_hidden_state
 
 
@@ -93,23 +88,18 @@ class TypeEmbedding(nn.Module):
         super(TypeEmbedding, self).__init__()
         self.embedding = BertEmbedding(pretrained=pretrained_bert_model)
 
-    def forward(self, type_inputs: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]) -> torch.Tensor:
+    def forward(self, type_input_ids: torch.Tensor, type_attention_mask: torch.Tensor) -> torch.Tensor:
 
-        # First create a BERT embedding of each entity type
-        type_embeddings_list: List[torch.Tensor] = [
-            self.embedding(
+        type_embedding: torch.Tensor = self.embedding(
                 input_ids=type_input_ids,
-                attention_mask=type_attention_mask,
-                token_type_ids=type_token_type_ids
+                attention_mask=type_attention_mask
             )
-            for type_input_ids, type_attention_mask, type_token_type_ids in type_inputs
-        ]
 
         # BERT gives a Tensor of shape (batch_size, sequence_length, hidden_dim)
         # We create a type embedding by taking mean over the token embeddings of each token in the type
-        type_embeddings_list = [torch.mean(type_embedding, dim=1) for type_embedding in type_embeddings_list]
+        type_embedding = torch.mean(type_embedding, dim=1)
         # Then concatenate the type embeddings and take the mean
-        type_embedding: torch.Tensor = torch.mean(torch.cat(type_embeddings_list, dim=0), dim=0).unsqueeze(dim=0)
+        #type_embedding: torch.Tensor = torch.mean(torch.cat(type_embeddings_list, dim=0), dim=0).unsqueeze(dim=0)
 
         return type_embedding
 
@@ -128,13 +118,8 @@ class TextEmbedding(nn.Module):
         self.output_embedding_dim = out_dim
         self.combination = EmbeddingCombination(input_dim=self.combined_embedding_dim, output_dim=self.output_embedding_dim)
 
-    def forward(
-            self,
-            input_ids: torch.Tensor,
-            attention_mask: torch.Tensor = None,
-            token_type_ids: torch.Tensor = None,
-    ) -> torch.Tensor:
-        bert_embedding: torch.Tensor = self.embedding(input_ids, attention_mask, token_type_ids)
+    def forward(self,input_ids: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
+        bert_embedding: torch.Tensor = self.embedding(input_ids, attention_mask)
         ngram_embedding: torch.Tensor = self.encoder(bert_embedding)
         combined_embedding: torch.Tensor = self.combination([bert_embedding, ngram_embedding])
         return combined_embedding
@@ -157,36 +142,40 @@ class EntityEmbedding(nn.Module):
 
     def forward(
             self,
-            description_inputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-            name_inputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-            type_inputs: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+            desc_input_ids,
+            desc_attention_mask,
+            name_input_ids,
+            name_attention_mask,
+            type_input_ids,
+            type_attention_mask
     ) -> torch.Tensor :
 
 
         # Unpack the description tensors
-        desc_input_ids, desc_attention_mask, desc_token_type_ids = description_inputs
+        #desc_input_ids, desc_attention_mask, desc_token_type_ids = description_inputs
         # Encode the description
         desc_embedding: torch.Tensor = self.desc_encoder(
             input_ids=desc_input_ids,
-            attention_mask=desc_attention_mask,
-            token_type_ids=desc_token_type_ids
+            attention_mask=desc_attention_mask
         )
 
 
         # Unpack the name tensors
-        name_input_ids, name_attention_mask, name_token_type_ids = name_inputs
+        #name_input_ids, name_attention_mask, name_token_type_ids = name_inputs
         # Encode the name
         name_embedding: torch.Tensor = self.name_encoder(
             input_ids=name_input_ids,
-            attention_mask=name_attention_mask,
-            token_type_ids=name_token_type_ids
+            attention_mask=name_attention_mask
         )
         # BERT gives a Tensor of shape (batch_size, sequence_length, hidden_dim)
         # We create a name embedding by taking a mean over the token embeddings of each token in the name
         name_embedding = torch.mean(name_embedding, dim=1)
 
         # Encode the entity types
-        type_embedding: torch.Tensor = self.type_encoder(type_inputs=type_inputs)
+        type_embedding: torch.Tensor = self.type_encoder(
+            type_input_ids=type_input_ids,
+            type_attention_mask=type_attention_mask
+        )
 
         # Finally, concatenate the three embeddings
         concat_embedding: torch.Tensor = torch.cat((desc_embedding, name_embedding, type_embedding), dim=1)
@@ -205,29 +194,41 @@ class ContextualEntityEmbedding(nn.Module):
         super(ContextualEntityEmbedding, self).__init__()
         self.context_encoder = TextEmbedding(pretrained_bert_model=pretrained_bert_model, out_dim=out_dim, n_gram_sizes=n_gram_sizes)
         self.entity_encoder = EntityEmbedding(pretrained_bert_model=pretrained_bert_model, out_dim=out_dim, n_gram_sizes=n_gram_sizes)
+        self.combination = nn.Linear(out_dim * 2, out_dim)
 
 
     def forward(
             self,
-            context_inputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-            description_inputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-            name_inputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-            type_inputs: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+            context_input_ids,
+            context_attention_mask,
+            desc_input_ids,
+            desc_attention_mask,
+            name_input_ids,
+            name_attention_mask,
+            type_input_ids,
+            type_attention_mask
     ) -> torch.Tensor:
 
 
         # Unpack the context tensors
-        context_input_ids, context_attention_mask, context_token_type_ids = context_inputs
+        #context_input_ids, context_attention_mask, context_token_type_ids = context_inputs
         # Encode the description
         context_embedding: torch.Tensor = self.context_encoder(
             input_ids=context_input_ids,
             attention_mask=context_attention_mask,
-            token_type_ids=context_token_type_ids
         )
 
-        entity_embedding: torch.Tensor = self.entity_encoder(description_inputs, name_inputs, type_inputs)
+        entity_embedding: torch.Tensor = self.entity_encoder(
+            desc_input_ids=desc_input_ids,
+            desc_attention_mask=desc_attention_mask,
+            name_input_ids=name_input_ids,
+            name_attention_mask=name_attention_mask,
+            type_input_ids=type_input_ids,
+            type_attention_mask=type_attention_mask
+        )
 
         out_embedding: torch.Tensor = torch.cat((context_embedding, entity_embedding), dim=1)
+        out_embedding = self.combination(out_embedding)
         return out_embedding
 
 
@@ -246,16 +247,7 @@ def create_bert_input(sentence, tokenizer):
     )
     return encoded_dict['input_ids'], encoded_dict['attention_mask'], encoded_dict['token_type_ids']
 
-
-
-
-def main():
-    pretrain = 'bert-base-uncased'
-    vocab = 'bert-base-uncased'
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    tokenizer = AutoTokenizer.from_pretrained(vocab)
-
-    data = '{"doc2":{"entity_desc":"alfr ronald took sport fly fish learn craft river trent blyth dove river blyth near todai creswel green ronald construct banksid fish hut design primarili observatori trout behaviour river hut elsewher hi home river ronald conduct experi formul idea eventu publish flyfish entomolog 1836","entity_name":"The Fly-fisher Entomology","entity_types":["1836 books","angling literature","fly fishing","british books","recreational fishing in the united kingdom"]},"doc1":{"entity_desc":"alfr ronald took sport fly fish learn craft river trent blyth dove river blyth near todai creswel green ronald construct banksid fish hut design primarili observatori trout behaviour river hut elsewher hi home river ronald conduct experi formul idea eventu publish flyfish entomolog 1836","entity_name":"Creswell, Staffordshire","entity_types":["stafford borough","villages in staffordshire"]},"context":"Recreational fishing","label":1}'
+def get_data(data, tokenizer):
     data_dict = json.loads(data)
 
     context = data_dict['context']
@@ -268,7 +260,6 @@ def main():
     e2_name = data_dict['doc2']['entity_name']
     e2_types = data_dict['doc2']['entity_types']
 
-
     context_inputs = create_bert_input(context, tokenizer)
 
     e1_desc_inputs = create_bert_input(e1_desc, tokenizer)
@@ -279,21 +270,127 @@ def main():
     e2_name_inputs = create_bert_input(e2_name, tokenizer)
     e2_type_inputs = [create_bert_input(e2_type, tokenizer) for e2_type in e2_types]
 
-    model = ContextualEntityEmbedding(pretrained_bert_model=pretrain, out_dim=100, n_gram_sizes=[1, 2, 3])
-    model.to(device)
-    model.train()
-    e1_embedding = model(context_inputs=context_inputs, description_inputs=e1_desc_inputs,
-                       name_inputs=e1_name_inputs, type_inputs=e1_type_inputs)
-    e2_embedding = model(context_inputs=context_inputs, description_inputs=e2_desc_inputs, name_inputs=e2_name_inputs,
-                       type_inputs=e2_type_inputs)
+    return {
+        'context_inputs': context_inputs,
+        'e1_desc_inputs': e1_desc_inputs,
+        'e1_name_inputs': e1_name_inputs,
+        'e1_type_inputs': e1_type_inputs,
+        'e2_desc_inputs': e2_desc_inputs,
+        'e2_name_inputs': e2_name_inputs,
+        'e2_type_inputs': e2_type_inputs,
+        'label': data_dict['label']
+    }
 
-    score = torch.cosine_similarity(e1_embedding, e2_embedding)
-    print('Score = {}'.format(score))
+
+
+
+
+def main():
+    pretrain = 'bert-base-uncased'
+    vocab = 'bert-base-uncased'
+    tokenizer = AutoTokenizer.from_pretrained(vocab)
+    #data_path = f'/media/shubham/My Passport/Ubuntu/Desktop/research/DYF/entity_similarity/data/train.jsonl'
+    data_path = '/home/sc1242/work/DYF/entity_similarity/data/dump/train.jsonl'
+    learning_rate = 2e-5
+    epochs = 4
+    batch_size = 25
+    num_warmup_steps = 1000
+
+    data_set = EntitySimilarityDataset(
+        dataset=data_path,
+        tokenizer=tokenizer,
+        max_len=512
+    )
+
+    data_loader = EntitySimilarityDataLoader(
+        dataset=data_set,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0
+    )
+
+    model = ContextualEntityEmbedding(pretrained_bert_model=pretrain, out_dim=100, n_gram_sizes=[1, 2, 3])
+
+    loss_fn = nn.BCEWithLogitsLoss()
+    #loss_fn = nn.CosineEmbeddingLoss()
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate)
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=num_warmup_steps,
+        num_training_steps=len(data_set) * epochs // batch_size
+    )
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print('Using device: {}'.format(device))
+    model.to(device)
+    loss_fn.to(device)
+    model.train()
+
+    num_batches = len(data_loader)
+    print('Number of batches = {}'.format(num_batches))
+    for epoch in range(epochs):
+        epoch_loss = 0
+        for _, batch in enumerate(data_loader):
+            optimizer.zero_grad()
+            e1_embedding = model(
+                context_input_ids=batch['context_input_ids'].to(device),
+                context_attention_mask=batch['context_attention_mask'].to(device),
+                desc_input_ids=batch['e1_desc_input_ids'].to(device),
+                desc_attention_mask=batch['e1_desc_attention_mask'].to(device),
+                name_input_ids=batch['e1_name_input_ids'].to(device),
+                name_attention_mask=batch['e1_name_attention_mask'].to(device),
+                type_input_ids=batch['e1_type_input_ids'].to(device),
+                type_attention_mask=batch['e1_type_attention_mask'].to(device)
+            )
+            e2_embedding = model(
+                context_input_ids=batch['context_input_ids'].to(device),
+                context_attention_mask=batch['context_attention_mask'].to(device),
+                desc_input_ids=batch['e2_desc_input_ids'].to(device),
+                desc_attention_mask=batch['e2_desc_attention_mask'].to(device),
+                name_input_ids=batch['e2_name_input_ids'].to(device),
+                name_attention_mask=batch['e2_name_attention_mask'].to(device),
+                type_input_ids=batch['e2_type_input_ids'].to(device),
+                type_attention_mask=batch['e2_type_attention_mask'].to(device)
+            )
+            batch_score = torch.cosine_similarity(e1_embedding, e2_embedding).unsqueeze(dim=1)
+            batch_loss = loss_fn(batch_score, batch['label'].unsqueeze(dim=1).float().to(device))
+            #batch_loss = loss_fn(e1_embedding, e2_embedding, batch['label'].to(device))
+            batch_loss.backward()
+            optimizer.step()
+            scheduler.step()
+            epoch_loss += batch_loss.item()
+            print('Batch Loss = {}'.format(batch_loss.item()))
+        print('Epoch = {} | Epoch Loss = {}'.format(epoch, epoch_loss))
+        print()
+
+
+
+
+
+
+    # data = '{"doc2":{"entity_desc":"alfr ronald took sport fly fish learn craft river trent blyth dove river blyth near todai creswel green ronald construct banksid fish hut design primarili observatori trout behaviour river hut elsewher hi home river ronald conduct experi formul idea eventu publish flyfish entomolog 1836","entity_name":"The Fly-fisher Entomology","entity_types":["1836 books","angling literature","fly fishing","british books","recreational fishing in the united kingdom"]},"doc1":{"entity_desc":"alfr ronald took sport fly fish learn craft river trent blyth dove river blyth near todai creswel green ronald construct banksid fish hut design primarili observatori trout behaviour river hut elsewher hi home river ronald conduct experi formul idea eventu publish flyfish entomolog 1836","entity_name":"Creswell, Staffordshire","entity_types":["stafford borough","villages in staffordshire"]},"context":"Recreational fishing","label":1}'
+    # example = get_data(data, tokenizer)
+    #
+    # model = ContextualEntityEmbedding(pretrained_bert_model=pretrain, out_dim=100, n_gram_sizes=[1, 2, 3])
+    # model.to(device)
+    # model.train()
+    # e1_embedding = model(context_inputs=example['context_inputs'],
+    #                      description_inputs=example['e1_desc_inputs'],
+    #                      name_inputs=example['e1_name_inputs'],
+    #                      type_inputs=example['e1_type_inputs']
+    #                      )
+    # e2_embedding = model(context_inputs=example['context_inputs'],
+    #                      description_inputs=example['e2_desc_inputs'],
+    #                      name_inputs=example['e2_name_inputs'],
+    #                     type_inputs=example['e2_type_inputs']
+    #                      )
+    #
+    # score = torch.cosine_similarity(e1_embedding, e2_embedding)
+    # print('Score = {}'.format(score))
 
 
 if __name__ == '__main__':
     main()
-
 
 
 
