@@ -25,14 +25,15 @@ public class CreateEntitySimilarityData {
     private final Map<String, String> queryIdToNameMap;
     private  final Map<String, String> entityIdToNameMap;
     private final List<String> stopWords;
-    String dataType;
     private final List<String> dataStrings = new ArrayList<>();
-    private final IndexSearcher indexSearcher;
+    private final IndexSearcher paraIndexSearcher;
+    private final IndexSearcher entityIndexSearcher;
     private int total = 0;
     private final int topK;
     private final Map<String, Set<String>> entities;
     private final AtomicInteger count = new AtomicInteger(0);
     private final boolean parallel;
+    private final String dataType;
 
 
     /**
@@ -116,6 +117,7 @@ public class CreateEntitySimilarityData {
 
 
     public CreateEntitySimilarityData(String paraIndex,
+                                      String entityIndex,
                                       String entityParaFile,
                                       String entityRunFile,
                                       String entityFile,
@@ -123,8 +125,8 @@ public class CreateEntitySimilarityData {
                                       String entityIdToNameFile,
                                       String stopWordsFile,
                                       int topK,
-                                      String dataType,
                                       String outFile,
+                                      String dataType,
                                       boolean parallel) {
 
         this.parallel = parallel;
@@ -132,7 +134,11 @@ public class CreateEntitySimilarityData {
         this.dataType = dataType;
 
         System.out.print("Setting up paragraph index...");
-        this.indexSearcher = LuceneHelper.createSearcher(paraIndex, "bm25");
+        this.paraIndexSearcher = LuceneHelper.createSearcher(paraIndex, "bm25");
+        System.out.println("[Done].");
+
+        System.out.print("Setting up entity index...");
+        this.entityIndexSearcher = LuceneHelper.createSearcher(entityIndex, "bm25");
         System.out.println("[Done].");
 
         System.out.print("Loading entity file...");
@@ -205,13 +211,15 @@ public class CreateEntitySimilarityData {
 
             for (String entityId : candidateEntitySet) {
                 Pair<String, Map<String, Integer>> entityWithSupportPsg = getSupportPsgForEntity(queryId, entityId,  true);
-                String supportPsg = entityWithSupportPsg.getKey();
-                Map<String, String> relatedEntities = getRelatedEntities(queryId, entityWithSupportPsg.getValue());
-                Map<String, String> nonRelatedEntities = getNonRelatedEntities(queryId);
-                if (dataType.equals("pointwise")) {
-                    toPointWiseData(supportPsg, relatedEntities, nonRelatedEntities);
-                } else {
-                    toPairWiseData(supportPsg, relatedEntities, nonRelatedEntities);
+                if (entityWithSupportPsg != null) {
+                    String supportPsg = entityWithSupportPsg.getKey();
+                    Map<String, String> relatedEntities = getRelatedEntities(queryId, entityWithSupportPsg.getValue());
+                    Map<String, String> nonRelatedEntities = getNonRelatedEntities(queryId);
+                    if (dataType.equals("labelled")) {
+                        toLabelledData(queryId, entityId, supportPsg, relatedEntities, nonRelatedEntities);
+                    } else {
+                        toTripletData(queryId, entityId, supportPsg, relatedEntities, nonRelatedEntities);
+                    }
                 }
             }
             if (parallel) {
@@ -221,83 +229,186 @@ public class CreateEntitySimilarityData {
         }
     }
 
-    private void toPairWiseData(String supportPsg,
-                                @NotNull Map<String, String> relatedEntities,
-                                @NotNull Map<String, String> nonRelatedEntities) {
-        List<String> relList = new ArrayList<>(relatedEntities.values());
-        List<String> nonRelList = new ArrayList<>(nonRelatedEntities.values());
+    /**
+     * Makes data in Triplet format.
+     * Format: (Context, Anchor, Positive Example, Negative Example)
+     * @param queryId QueryId
+     * @param entityId EntityId
+     * @param entitySupportPsg Support passage for entity to be used as description
+     * @param relatedEntities Entities related to given entity in context of query
+     * @param nonRelatedEntities Entities not related to given entity in context of query
+     */
+
+    private void toTripletData(String queryId,
+                               String entityId,
+                               String entitySupportPsg,
+                               @NotNull Map<String, String> relatedEntities,
+                               @NotNull Map<String, String> nonRelatedEntities) {
+        String query = String.join(
+                " ",
+                RankingHelper.preProcess(
+                        queryIdToNameMap.get(queryId),
+                        stopWords
+                )
+        );
+
+        // Create data for anchor
+        Map<String, Object> anchor = getDataForEntity(entityId, entitySupportPsg);
+
+        // Create pairs of (Positive, Negative)
+        List<String> relList = new ArrayList<>(relatedEntities.keySet());
+        List<String> nonRelList = new ArrayList<>(nonRelatedEntities.keySet());
         List<Pair<String, String>> pairs = relList.stream()
                 .flatMap(i -> nonRelList.stream()
                         .map(j -> new Pair<>(i, j)))
                 .collect(Collectors.toList());
 
         for (Pair<String, String> pair : pairs) {
-            dataStrings.add(toJSONString(String.join(" ", RankingHelper.preProcess(supportPsg, stopWords)),
-                    String.join(" ", RankingHelper.preProcess(pair.getKey(), stopWords)),
-                    String.join(" ", RankingHelper.preProcess(pair.getValue(), stopWords))
-            ));
+
+            // Get data for positive sample
+            String relEntityId = pair.getKey();
+            Map<String, Object> positive = getDataForEntity(relEntityId, relatedEntities.get(relEntityId));
+
+            // Get data for negative sample
+            String nonRelEntityId = pair.getValue();
+            Map<String, Object> negative = getDataForEntity(nonRelEntityId, nonRelatedEntities.get(nonRelEntityId));
+            dataStrings.add(toJSONString(query, anchor, positive, negative));
         }
 
     }
 
-    private void toPointWiseData(String supportPsg,
-                                 @NotNull Map<String, String> relatedEntities,
-                                 Map<String, String> nonRelatedEntities) {
-        for (String entityId : relatedEntities.keySet()) {
-            dataStrings.add(toJSONString(String.join(" ", RankingHelper.preProcess(supportPsg, stopWords)),
-                    String.join(" ", RankingHelper.preProcess(relatedEntities.get(entityId), stopWords)),
-                    1
-            ));
-        }
-        for (String entityId : nonRelatedEntities.keySet()) {
-           if (nonRelatedEntities.get(entityId) != null) {
-               dataStrings.add(toJSONString(String.join(" ", RankingHelper.preProcess(supportPsg, stopWords)),
-                       String.join(" ", RankingHelper.preProcess(nonRelatedEntities.get(entityId), stopWords)),
-                       0
-               ));
-           }
+    private void toLabelledData(String queryId,
+                                String entityId,
+                                String entitySupportPsg,
+                                @NotNull Map<String, String> relatedEntities,
+                                Map<String, String> nonRelatedEntities) {
 
+        String query = String.join(
+                " ",
+                RankingHelper.preProcess(
+                        queryIdToNameMap.get(queryId),
+                        stopWords
+                )
+        );
+
+        Map<String, Object> doc1 = getDataForEntity(entityId, entitySupportPsg);
+//        doc1.put("entity_name", String.join(
+//                " ",
+//                RankingHelper.preProcess(
+//                        entityIdToNameMap.get(entityId),
+//                        stopWords
+//                )
+//        ));
+//        doc1.put("entity_desc", String.join(
+//                " ",
+//                RankingHelper.preProcess(
+//                        entitySupportPsg,
+//                        stopWords
+//                )
+//        ));
+//        doc1.put("entity_types", Utilities.getEntityCategories(entityId, entityIndexSearcher, stopWords));
+
+
+        for (String relEntityId : relatedEntities.keySet()) {
+            Map<String, Object> doc2 = getDataForEntity(relEntityId, relatedEntities.get(relEntityId));
+//            doc2.put("entity_name", String.join(
+//                    " ",
+//                    RankingHelper.preProcess(
+//                            entityIdToNameMap.get(relEntityId),
+//                            stopWords
+//                    )
+//            ));
+//            doc2.put("entity_desc", String.join(
+//                    " ",
+//                    RankingHelper.preProcess(
+//                            relatedEntities.get(relEntityId),
+//                            stopWords
+//                    )
+//            ));
+//            doc2.put("entity_types", Utilities.getEntityCategories(relEntityId, entityIndexSearcher, stopWords));
+           dataStrings.add(toJSONString(query, doc1, doc2, 1));
         }
+
+        for (String nonRelEntityId : nonRelatedEntities.keySet()) {
+            Map<String, Object> doc2 = getDataForEntity(nonRelEntityId, nonRelatedEntities.get(nonRelEntityId));
+//            doc2.put("entity_name", String.join(
+//                    " ",
+//                    RankingHelper.preProcess(
+//                            entityIdToNameMap.get(nonRelEntityId),
+//                            stopWords
+//                    )
+//            ));
+//            doc2.put("entity_desc", String.join(
+//                    " ",
+//                    RankingHelper.preProcess(
+//                            nonRelatedEntities.get(nonRelEntityId),
+//                            stopWords
+//                    )
+//            ));
+//            doc2.put("entity_types", Utilities.getEntityCategories(nonRelEntityId, entityIndexSearcher, stopWords));
+            dataStrings.add(toJSONString(query, doc1, doc2, 0));
+        }
+
     }
-
 
     @NotNull
+    private Map<String, Object> getDataForEntity(String entityId, String entitySupportPsg) {
+        Map<String, Object> doc = new HashMap<>();
+        doc.put("entity_name", String.join(
+                " ",
+                RankingHelper.preProcess(
+                        entityIdToNameMap.get(entityId),
+                        stopWords
+                )
+        ));
+        doc.put("entity_desc", String.join(
+                " ",
+                RankingHelper.preProcess(
+                        entitySupportPsg,
+                        stopWords
+                )
+        ));
+        doc.put("entity_types", Utilities.getEntityCategories(entityId, entityIndexSearcher, stopWords));
+        return doc;
+    }
+
+    @Nullable
     private Pair<String, Map<String, Integer>> getSupportPsgForEntity(String queryId,
-                                                        @NotNull String entityId,
-                                                        boolean returnFreqDist) {
+                                                                      @NotNull String entityId,
+                                                                      boolean returnFreqDist) {
 
 
         Set<String> retEntitySet = entityRankings.get(queryId);
-        try {
-            // Get the paragraphs which mention the entity
-            List<String> paraList = JSONArrayToList(new JSONObject(entityParaMap.get(entityId))
-                    .getJSONArray("paragraphs"));
+        if (entityParaMap.containsKey(entityId)) {
+            try {
+                // Get the paragraphs which mention the entity
+                List<String> paraList = JSONArrayToList(new JSONObject(entityParaMap.get(entityId))
+                        .getJSONArray("paragraphs"));
 
-            // Rank these paragraphs for the query
-            List<RankingHelper.ScoredDocument> rankedParaList = rankParasForQuery(queryId, entityId, paraList);
+                // Rank these paragraphs for the query
+                List<RankingHelper.ScoredDocument> rankedParaList = rankParasForQuery(queryId, entityId, paraList);
 
-            if (!rankedParaList.isEmpty()) {
+                if (!rankedParaList.isEmpty()) {
 
-                // Create the ECD using the ranked paragraphs
-                EntityContextDocument d = createECD(entityId, rankedParaList);
-                if (d != null) {
-                    List<String> contextEntityList = d.getEntityList();
-                    Map<String, Integer> freqDist = getDistribution(contextEntityList, retEntitySet);
-                    freqDist.remove(entityId);
-                    String supportPsgText = getSupportPsgForEntity(d, freqDist);
-                    if  (returnFreqDist) {
-                        return new Pair<>(supportPsgText, freqDist);
-                    } else {
-                        return new Pair<>(supportPsgText, null);
+                    // Create the ECD using the ranked paragraphs
+                    EntityContextDocument d = createECD(entityId, rankedParaList);
+                    if (d != null) {
+                        List<String> contextEntityList = d.getEntityList();
+                        Map<String, Integer> freqDist = getDistribution(contextEntityList, retEntitySet);
+                        freqDist.remove(entityId);
+                        String supportPsgText = getSupportPsgForEntity(d, freqDist);
+                        if (returnFreqDist) {
+                            return new Pair<>(supportPsgText, freqDist);
+                        } else {
+                            return new Pair<>(supportPsgText, null);
+                        }
                     }
                 }
+            } catch (JSONException e) {
+                e.printStackTrace();
             }
-        } catch (JSONException e) {
-            e.printStackTrace();
         }
-
-        return new Pair<>(null, null);
-
+        return null;
     }
 
     @NotNull
@@ -312,7 +423,9 @@ public class CreateEntitySimilarityData {
         for (Map.Entry<String, Integer> entry : topKEntities) {
             String entityId = entry.getKey();
             Pair<String, Map<String, Integer>> entityWithSupportPsg = getSupportPsgForEntity(queryId, entityId, false);
-            relEntityMap.put(entityId, entityWithSupportPsg.getKey());
+            if (entityWithSupportPsg != null) {
+                relEntityMap.put(entityId, entityWithSupportPsg.getKey());
+            }
         }
         return relEntityMap;
     }
@@ -335,7 +448,9 @@ public class CreateEntitySimilarityData {
 
         for (String entityId : topKEntities) {
             Pair<String, Map<String, Integer>> entityWithSupportPsg = getSupportPsgForEntity(randomQuery, entityId, false);
-            nonRelEntityMap.put(entityId, entityWithSupportPsg.getKey());
+            if (entityWithSupportPsg != null) {
+                nonRelEntityMap.put(entityId, entityWithSupportPsg.getKey());
+            }
         }
 
         return nonRelEntityMap;
@@ -345,7 +460,7 @@ public class CreateEntitySimilarityData {
     protected List<RankingHelper.ScoredDocument> rankParasForQuery(String queryId, String entityId, List<String> paraList) {
 
         // Get the Lucene documents
-        List<Document> luceneDocList = LuceneHelper.toLuceneDocList(paraList, indexSearcher);
+        List<Document> luceneDocList = LuceneHelper.toLuceneDocList(paraList, paraIndexSearcher);
 
         // Convert to BooleanQuery
         BooleanQuery booleanQuery = RankingHelper.toBooleanQueryWithPRF(queryIdToNameMap.get(queryId),
@@ -448,8 +563,7 @@ public class CreateEntitySimilarityData {
         Map<String, Integer> scoreMap = scoreSupportPsg(documents, freqMap);
         Map.Entry<String, Integer> topSupportPsgForEntity = new ArrayList<>(scoreMap.entrySet()).get(0);
         String topSupportPsgId = topSupportPsgForEntity.getKey();
-        String topSupportPsgText = Utilities.idToText(topSupportPsgId, "Text", indexSearcher);
-        return topSupportPsgText;
+        return Utilities.idToText(topSupportPsgId, "Text", paraIndexSearcher);
 
     }
 
@@ -503,23 +617,12 @@ public class CreateEntitySimilarityData {
         return paraScore;
     }
 
-    public static String toJSONString(String query, String docPos, String docNeg) {
+    private String toJSONString(String context, Map<String, Object> doc1, Map<String, Object> doc2, int label) {
         JSONObject example = new JSONObject();
         try {
-            example.put("query", query);
-            example.put("doc_pos", docPos);
-            example.put("doc_neg", docNeg);
-        } catch (JSONException e) {
-            e.printStackTrace();
-        }
-        return example.toString();
-    }
-
-    public static String toJSONString(String query, String doc, int label) {
-        JSONObject example = new JSONObject();
-        try {
-            example.put("query", query);
-            example.put("doc", doc);
+            example.put("context", context);
+            example.put("doc1", doc1);
+            example.put("doc2", doc2);
             example.put("label", label);
         } catch (JSONException e) {
             e.printStackTrace();
@@ -527,27 +630,52 @@ public class CreateEntitySimilarityData {
         return example.toString();
     }
 
+    private String toJSONString(String context,
+                                Map<String, Object> anchor,
+                                Map<String, Object> positive,
+                                Map<String, Object> negative) {
+
+        JSONObject example = new JSONObject();
+        try {
+            example.put("context", context);
+            example.put("anchor", anchor);
+            example.put("positive", positive);
+            example.put("negative", negative);
+        } catch (JSONException e) {
+            e.printStackTrace();
+        }
+        return example.toString();
+    }
+
+
 
 
     public static void main(@NotNull String[] args) {
 
         String paraIndex = args[0];
-        String entityPassageFile = args[1];
-        String entityRunFile = args[2];
-        String entityFile = args[3];
-        String queryIdToNameFile = args[4];
-        String entityIdToNameFile = args[5];
-        String stopWordsFile = args[6];
-        int topK = Integer.parseInt(args[7]);
-        String dataType = args[8];
+        String entityIndex = args[1];
+        String entityPassageFile = args[2];
+        String entityRunFile = args[3];
+        String entityFile = args[4];
+        String queryIdToNameFile = args[5];
+        String entityIdToNameFile = args[6];
+        String stopWordsFile = args[7];
+        int topK = Integer.parseInt(args[8]);
         String outFile = args[9];
-        boolean parallel = args[10].equals("true");
+        String dataType = args[10];
+        boolean parallel = args[11].equals("true");
 
-        new CreateEntitySimilarityData(paraIndex, entityPassageFile, entityRunFile, entityFile, queryIdToNameFile,
-                entityIdToNameFile, stopWordsFile, topK, dataType, outFile, parallel);
+        if (dataType.equals("labelled") || dataType.equals("triplet")) {
+
+            new CreateEntitySimilarityData(paraIndex, entityIndex, entityPassageFile, entityRunFile, entityFile, queryIdToNameFile,
+                    entityIdToNameFile, stopWordsFile, topK, outFile, dataType, parallel);
+        } else {
+            System.err.println("Data type must be `labelled` or `triplet`.");
+        }
 
 
     }
 }
+
 
 
