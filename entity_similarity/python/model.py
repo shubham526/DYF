@@ -7,8 +7,7 @@ import torch.nn as nn
 from transformers import AutoConfig, AutoModel, DistilBertModel, AutoTokenizer, get_linear_schedule_with_warmup
 import warnings
 import json
-from dataset import EntitySimilarityDataset
-from dataloader import EntitySimilarityDataLoader
+
 
 class BertEmbedding(nn.Module):
     def __init__(self, pretrained: str) -> None:
@@ -17,7 +16,6 @@ class BertEmbedding(nn.Module):
         self.pretrained = pretrained
         self.config = AutoConfig.from_pretrained(self.pretrained)
         self.bert = AutoModel.from_pretrained(self.pretrained, config=self.config)
-
 
     def forward(self,input_ids: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         output = self.bert(input_ids=input_ids, attention_mask=attention_mask)
@@ -192,8 +190,16 @@ class ContextualEntityEmbedding(nn.Module):
             out_dim: int,
             n_gram_sizes: List[int] = None):
         super(ContextualEntityEmbedding, self).__init__()
-        self.context_encoder = TextEmbedding(pretrained_bert_model=pretrained_bert_model, out_dim=out_dim, n_gram_sizes=n_gram_sizes)
-        self.entity_encoder = EntityEmbedding(pretrained_bert_model=pretrained_bert_model, out_dim=out_dim, n_gram_sizes=n_gram_sizes)
+        self.context_encoder = TextEmbedding(
+            pretrained_bert_model=pretrained_bert_model,
+            out_dim=out_dim,
+            n_gram_sizes=n_gram_sizes,
+        )
+        self.entity_encoder = EntityEmbedding(
+            pretrained_bert_model=pretrained_bert_model,
+            out_dim=out_dim,
+            n_gram_sizes=n_gram_sizes,
+        )
         self.combination = nn.Linear(out_dim * 2, out_dim)
 
 
@@ -230,163 +236,6 @@ class ContextualEntityEmbedding(nn.Module):
         out_embedding: torch.Tensor = torch.cat((context_embedding, entity_embedding), dim=1)
         out_embedding = self.combination(out_embedding)
         return out_embedding
-
-
-
-
-def create_bert_input(sentence, tokenizer):
-    encoded_dict = tokenizer.encode_plus(
-        text=sentence,
-        add_special_tokens=True,  # Add '[CLS]' and '[SEP]'
-        max_length=15,  # Pad & truncate all sentences.
-        padding='max_length',
-        truncation=True,
-        return_attention_mask=True,  # Construct attn. masks.
-        return_token_type_ids=True,  # Construct token type ids
-        return_tensors='pt'
-    )
-    return encoded_dict['input_ids'], encoded_dict['attention_mask'], encoded_dict['token_type_ids']
-
-def get_data(data, tokenizer):
-    data_dict = json.loads(data)
-
-    context = data_dict['context']
-
-    e1_desc = data_dict['doc1']['entity_desc']
-    e1_name = data_dict['doc1']['entity_name']
-    e1_types = data_dict['doc1']['entity_types']
-
-    e2_desc = data_dict['doc2']['entity_desc']
-    e2_name = data_dict['doc2']['entity_name']
-    e2_types = data_dict['doc2']['entity_types']
-
-    context_inputs = create_bert_input(context, tokenizer)
-
-    e1_desc_inputs = create_bert_input(e1_desc, tokenizer)
-    e1_name_inputs = create_bert_input(e1_name, tokenizer)
-    e1_type_inputs = [create_bert_input(e1_type, tokenizer) for e1_type in e1_types]
-
-    e2_desc_inputs = create_bert_input(e2_desc, tokenizer)
-    e2_name_inputs = create_bert_input(e2_name, tokenizer)
-    e2_type_inputs = [create_bert_input(e2_type, tokenizer) for e2_type in e2_types]
-
-    return {
-        'context_inputs': context_inputs,
-        'e1_desc_inputs': e1_desc_inputs,
-        'e1_name_inputs': e1_name_inputs,
-        'e1_type_inputs': e1_type_inputs,
-        'e2_desc_inputs': e2_desc_inputs,
-        'e2_name_inputs': e2_name_inputs,
-        'e2_type_inputs': e2_type_inputs,
-        'label': data_dict['label']
-    }
-
-
-
-
-
-def main():
-    pretrain = 'bert-base-uncased'
-    vocab = 'bert-base-uncased'
-    tokenizer = AutoTokenizer.from_pretrained(vocab)
-    #data_path = f'/media/shubham/My Passport/Ubuntu/Desktop/research/DYF/entity_similarity/data/train.jsonl'
-    data_path = '/home/sc1242/work/DYF/entity_similarity/data/dump/train.jsonl'
-    learning_rate = 2e-5
-    epochs = 4
-    batch_size = 25
-    num_warmup_steps = 1000
-
-    data_set = EntitySimilarityDataset(
-        dataset=data_path,
-        tokenizer=tokenizer,
-        max_len=512
-    )
-
-    data_loader = EntitySimilarityDataLoader(
-        dataset=data_set,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=0
-    )
-
-    model = ContextualEntityEmbedding(pretrained_bert_model=pretrain, out_dim=100, n_gram_sizes=[1, 2, 3])
-
-    loss_fn = nn.BCEWithLogitsLoss()
-    #loss_fn = nn.CosineEmbeddingLoss()
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate)
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=num_warmup_steps,
-        num_training_steps=len(data_set) * epochs // batch_size
-    )
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print('Using device: {}'.format(device))
-    model.to(device)
-    loss_fn.to(device)
-    model.train()
-
-    num_batches = len(data_loader)
-    print('Number of batches = {}'.format(num_batches))
-    for epoch in range(epochs):
-        epoch_loss = 0
-        for _, batch in enumerate(data_loader):
-            optimizer.zero_grad()
-            e1_embedding = model(
-                context_input_ids=batch['context_input_ids'].to(device),
-                context_attention_mask=batch['context_attention_mask'].to(device),
-                desc_input_ids=batch['e1_desc_input_ids'].to(device),
-                desc_attention_mask=batch['e1_desc_attention_mask'].to(device),
-                name_input_ids=batch['e1_name_input_ids'].to(device),
-                name_attention_mask=batch['e1_name_attention_mask'].to(device),
-                type_input_ids=batch['e1_type_input_ids'].to(device),
-                type_attention_mask=batch['e1_type_attention_mask'].to(device)
-            )
-            e2_embedding = model(
-                context_input_ids=batch['context_input_ids'].to(device),
-                context_attention_mask=batch['context_attention_mask'].to(device),
-                desc_input_ids=batch['e2_desc_input_ids'].to(device),
-                desc_attention_mask=batch['e2_desc_attention_mask'].to(device),
-                name_input_ids=batch['e2_name_input_ids'].to(device),
-                name_attention_mask=batch['e2_name_attention_mask'].to(device),
-                type_input_ids=batch['e2_type_input_ids'].to(device),
-                type_attention_mask=batch['e2_type_attention_mask'].to(device)
-            )
-            batch_score = torch.cosine_similarity(e1_embedding, e2_embedding).unsqueeze(dim=1)
-            batch_loss = loss_fn(batch_score, batch['label'].unsqueeze(dim=1).float().to(device))
-            #batch_loss = loss_fn(e1_embedding, e2_embedding, batch['label'].to(device))
-            batch_loss.backward()
-            optimizer.step()
-            scheduler.step()
-            epoch_loss += batch_loss.item()
-            print('Batch Loss = {}'.format(batch_loss.item()))
-        print('Epoch = {} | Epoch Loss = {}'.format(epoch, epoch_loss))
-        print()
-
-
-
-
-
-
-    # data = '{"doc2":{"entity_desc":"alfr ronald took sport fly fish learn craft river trent blyth dove river blyth near todai creswel green ronald construct banksid fish hut design primarili observatori trout behaviour river hut elsewher hi home river ronald conduct experi formul idea eventu publish flyfish entomolog 1836","entity_name":"The Fly-fisher Entomology","entity_types":["1836 books","angling literature","fly fishing","british books","recreational fishing in the united kingdom"]},"doc1":{"entity_desc":"alfr ronald took sport fly fish learn craft river trent blyth dove river blyth near todai creswel green ronald construct banksid fish hut design primarili observatori trout behaviour river hut elsewher hi home river ronald conduct experi formul idea eventu publish flyfish entomolog 1836","entity_name":"Creswell, Staffordshire","entity_types":["stafford borough","villages in staffordshire"]},"context":"Recreational fishing","label":1}'
-    # example = get_data(data, tokenizer)
-    #
-    # model = ContextualEntityEmbedding(pretrained_bert_model=pretrain, out_dim=100, n_gram_sizes=[1, 2, 3])
-    # model.to(device)
-    # model.train()
-    # e1_embedding = model(context_inputs=example['context_inputs'],
-    #                      description_inputs=example['e1_desc_inputs'],
-    #                      name_inputs=example['e1_name_inputs'],
-    #                      type_inputs=example['e1_type_inputs']
-    #                      )
-    # e2_embedding = model(context_inputs=example['context_inputs'],
-    #                      description_inputs=example['e2_desc_inputs'],
-    #                      name_inputs=example['e2_name_inputs'],
-    #                     type_inputs=example['e2_type_inputs']
-    #                      )
-    #
-    # score = torch.cosine_similarity(e1_embedding, e2_embedding)
-    # print('Score = {}'.format(score))
 
 
 if __name__ == '__main__':
