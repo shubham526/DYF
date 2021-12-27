@@ -9,11 +9,13 @@ import org.apache.lucene.search.similarities.BM25Similarity;
 import org.apache.lucene.search.similarities.LMDirichletSimilarity;
 import org.apache.lucene.search.similarities.LMJelinekMercerSimilarity;
 import org.apache.lucene.search.similarities.Similarity;
+import org.apache.lucene.store.ByteBuffersDirectory;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
-import org.apache.lucene.store.RAMDirectory;
+import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+
 
 import java.io.File;
 import java.io.IOException;
@@ -89,25 +91,19 @@ public class LuceneHelper {
     }
 
     /**
-     * Class to make a RAM index.
-     * This class uses the Lucene 7.7.0 RAMDirectory to create in-memory indices.
-     * NOTE: Use caution in the use of this class! The RAMDirectory class has been marked as deprecated by the developers.
-     * @author Shubham Chatterjee
-     * @version 03/11/2019
+     * This class is based on the Lucene BytesBuffersDirectory.
+     * @version 11/26/2021
      */
-    public static class RAMIndex {
 
-        /**
-         * Get the IndexWriter.
-         * This method uses the lucene RAMDirectory which has been marked deprecated.
-         * The reason for its use is that we want to maintain an in-memory index of relevant documents for
-         * every query and there was no other tool in Lucene 7.7.0 that I am aware of that does this.
-         * The problem with using RAMDirectory is that I cannot use parraelStreams in Java since this method
-         * has been marked as not thread-safe by the developers.
-         * @return IndexWriter
-         */
-        public static IndexWriter createWriter(Analyzer analyzer) {
-            Directory dir = new RAMDirectory();
+    public static class MemoryIndex {
+
+        @NotNull
+        @Contract(value = " -> new", pure = true)
+        public static Directory initialize() {
+            return new ByteBuffersDirectory();
+        }
+
+        public static IndexWriter createWriter(Directory dir, Analyzer analyzer) {
             IndexWriterConfig conf = new IndexWriterConfig(analyzer);
             conf.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
             IndexWriter iw = null;
@@ -120,14 +116,8 @@ public class LuceneHelper {
 
         }
 
-        /**
-         * Get the IndexSearcher.
-         * @return IndexSearcher
-         * @throws IOException
-         */
         @NotNull
-        public static IndexSearcher createSearcher(Similarity similarity, @NotNull IndexWriter iw) throws IOException {
-            Directory dir = iw.getDirectory();
+        public static IndexSearcher createSearcher(Directory dir, Similarity similarity) throws IOException {
             IndexReader reader = DirectoryReader.open(dir);
             IndexSearcher searcher = new IndexSearcher(reader);
             searcher.setSimilarity(similarity);
@@ -149,12 +139,6 @@ public class LuceneHelper {
             }
             iw.commit();
         }
-
-        /**
-         * Close the directory to release the associated memory.
-         * @param iw IndexWriter
-         * @throws IOException
-         */
         public static void close(@NotNull IndexWriter iw) throws IOException {
             iw.getDirectory().close();
 

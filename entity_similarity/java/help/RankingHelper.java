@@ -9,6 +9,7 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.*;
 import org.apache.lucene.search.similarities.LMJelinekMercerSimilarity;
+import org.apache.lucene.store.Directory;
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -99,12 +100,28 @@ public class RankingHelper {
     public static BooleanQuery toBooleanQuery(String queryStr, String entityStr)  {
         List<String> tokens = new ArrayList<>();
         BooleanQuery.Builder booleanQuery = new BooleanQuery.Builder();
+        boolean reTry = true;
         try {
-            tokens.addAll(tokenizeQuery(queryStr, "Text", new EnglishAnalyzer()));
-            tokens.addAll(tokenizeQuery(entityStr, "Text", new EnglishAnalyzer()));
-            for (String token : tokens) {
-                booleanQuery.add(new BoostQuery(new TermQuery(new Term("Text", token)), 1.0f),
-                        BooleanClause.Occur.SHOULD);
+            while (reTry) {
+                try {
+                    reTry = false;
+                    tokens.addAll(tokenize(queryStr, "Text", new EnglishAnalyzer()));
+                    tokens.addAll(tokenize(entityStr, "Text", new EnglishAnalyzer()));
+                    for (String token : tokens) {
+                        booleanQuery.add(new BoostQuery(new TermQuery(new Term("Text", token)), 1.0f),
+                                BooleanClause.Occur.SHOULD);
+                    }
+                } catch (BooleanQuery.TooManyClauses e) {
+                    // Double the number of boolean queries allowed.
+                    // The default is in org.apache.lucene.search.BooleanQuery and is 1024.
+                    String defaultQueries = Integer.toString(BooleanQuery.getMaxClauseCount());
+                    int oldQueries = Integer.parseInt(System.getProperty("org.apache.lucene.maxClauseCount", defaultQueries));
+                    int newQueries = oldQueries * 2;
+                    System.err.println("Too many hits for query: " + oldQueries + ".  Increasing to " + newQueries);
+                    System.setProperty("org.apache.lucene.maxClauseCount", Integer.toString(newQueries));
+                    BooleanQuery.setMaxClauseCount(newQueries);
+                    reTry = true;
+                }
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -145,11 +162,11 @@ public class RankingHelper {
     }
 
     @NotNull
-    public static List<String> tokenizeQuery(String queryStr, String searchField, @NotNull Analyzer analyzer) throws IOException {
-        TokenStream tokenStream = analyzer.tokenStream(searchField, new StringReader(queryStr));
+    public static List<String> tokenize(String text, String searchField, @NotNull Analyzer analyzer) throws IOException {
+        TokenStream tokenStream = analyzer.tokenStream(searchField, new StringReader(text));
         tokenStream.reset();
         List<String> tokens = new ArrayList<>();
-        while (tokenStream.incrementToken() && tokens.size() < 64) {
+        while (tokenStream.incrementToken()) {
             final String token = tokenStream.getAttribute(CharTermAttribute.class).toString();
             tokens.add(token);
         }
@@ -166,7 +183,7 @@ public class RankingHelper {
         BooleanQuery.Builder booleanQuery = new BooleanQuery.Builder();
 
         if (!omitQueryTerms) {
-            tokens.addAll(tokenizeQuery(queryStr, searchField, analyzer));
+            tokens.addAll(tokenize(queryStr, searchField, analyzer));
             for (String token : tokens) {
                 booleanQuery.add(new BoostQuery(new TermQuery(new Term(searchField, token)), 1.0f),
                         BooleanClause.Occur.SHOULD);
@@ -174,10 +191,21 @@ public class RankingHelper {
         }
 
         // add RM3 terms
-        for (Map.Entry<String, Double> stringFloatEntry : relevanceModel.subList(0, Math.min(relevanceModel.size(), (64 - tokens.size())))) {
-            String token = stringFloatEntry.getKey();
-            double weight = stringFloatEntry.getValue();
-            booleanQuery.add(new BoostQuery(new TermQuery(new Term("Text", token)), (float) weight), BooleanClause.Occur.SHOULD);
+        try {
+            for (Map.Entry<String, Double> stringFloatEntry : relevanceModel.subList(0, Math.min(relevanceModel.size(), tokens.size()))) {
+                String token = stringFloatEntry.getKey();
+                double weight = stringFloatEntry.getValue();
+                booleanQuery.add(new BoostQuery(new TermQuery(new Term("Text", token)), (float) weight), BooleanClause.Occur.SHOULD);
+            }
+        } catch (java.lang.IllegalArgumentException e) {
+            System.out.println("==================================");
+            System.out.println("IllegalArgumentException");
+            System.out.println("QueryStr: " + queryStr);
+            System.out.println("Tokens: " + tokens);
+            System.out.println("Tokens size = " + tokens.size());
+            System.out.println("Relevance model: " + relevanceModel);
+            System.out.println("Relevance model size = " + relevanceModel.size());
+            System.out.println("==================================");
         }
         return booleanQuery.build();
     }
@@ -206,19 +234,14 @@ public class RankingHelper {
         return sortByValueDescending(freqDist);
     }
 
-
     public static  void addTokens(String content,
                             double weight,
                             Map<String,Double> wordFreq) throws IOException {
 
-        TokenStream tokenStream = new EnglishAnalyzer().tokenStream("Text", new StringReader(content));
-        tokenStream.reset();
-        while (tokenStream.incrementToken()) {
-            final String token = tokenStream.getAttribute(CharTermAttribute.class).toString();
+        List<String> tokens = tokenize(content, "Text", new EnglishAnalyzer());
+        for (String token : tokens) {
             wordFreq.compute(token, (t, oldV) -> (oldV == null) ? weight : oldV + weight);
         }
-        tokenStream.end();
-        tokenStream.close();
     }
 
 
@@ -258,14 +281,21 @@ public class RankingHelper {
         // Remove all special characters such as - + ^ . : , ( )
         text = text.replaceAll("[\\-+.^*:,;=(){}\\[\\]\"]","");
 
+        // Remove all numeric values
+        text = text.replaceAll("\\d","");
+
         // Get all words
-        List<String> words = new ArrayList<>(Arrays.asList(text.split(" ")));
-        words.removeAll(Collections.singleton(null));
-        words.removeAll(Collections.singleton(""));
-
-        // Remove all stop words
-        words.removeIf(stopWords::contains);
-
+        //List<String> words = new ArrayList<>(Arrays.asList(text.split(" ")));
+        List<String> words = new ArrayList<>();
+        try {
+            words = tokenize(text, "Text", new EnglishAnalyzer());
+            words.removeAll(Collections.singleton(null));
+            words.removeAll(Collections.singleton(""));
+            // Remove all stop words
+            words.removeIf(stopWords::contains);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
         return words;
     }
 
@@ -285,33 +315,54 @@ public class RankingHelper {
 
 
         List<ScoredDocument> rankedDocList = new ArrayList<>();
+        boolean reTry = true;
         try {
 
-            // 1. Create the IndexWriter
-            IndexWriter iw = LuceneHelper.RAMIndex.createWriter(new EnglishAnalyzer());
+            // 1. Initialize the index
+            Directory dir = LuceneHelper.MemoryIndex.initialize();
 
-            // 2. Create the index
-            LuceneHelper.RAMIndex.createIndex(documentList, iw);
+            // 2. Create the IndexWriter
+            IndexWriter iw = LuceneHelper.MemoryIndex.createWriter(dir, new EnglishAnalyzer());
 
-            // 3. Create the IndexSearcher
-            IndexSearcher is = LuceneHelper.RAMIndex.createSearcher(new LMJelinekMercerSimilarity(0.4f), iw);
+            // 3. Create the index
+            LuceneHelper.MemoryIndex.createIndex(documentList, iw);
 
-            // 4. Search the index
-            TopDocs topDocs = is.search(query, numDocs);
+            // 4. Create the IndexSearcher
+            IndexSearcher is = LuceneHelper.MemoryIndex.createSearcher(dir, new LMJelinekMercerSimilarity(0.4f));
 
-            if (topDocs.totalHits.value == 0) {
-                // If no documents found, then return empty list
-                return new ArrayList<>();
+            while (reTry) {
+
+                try {
+                    reTry = false;
+
+                    // 5. Search the index
+                    TopDocs topDocs = is.search(query, numDocs);
+
+                    if (topDocs.totalHits.value == 0) {
+                        // If no documents found, then return empty list
+                        return new ArrayList<>();
+                    }
+
+                    // 6. Score the docs
+                    ScoreDoc[] retDocs = topDocs.scoreDocs;
+
+                    for (int i = 0; i < retDocs.length; i++) {
+                        rankedDocList.add(new ScoredDocument(is.doc(retDocs[i].doc).get("Id"), is.doc(retDocs[i].doc), topDocs.scoreDocs[i].score));
+                    }
+                } catch (BooleanQuery.TooManyClauses e) {
+                    // Double the number of boolean queries allowed.
+                    // The default is in org.apache.lucene.search.BooleanQuery and is 1024.
+                    String defaultQueries = Integer.toString(BooleanQuery.getMaxClauseCount());
+                    int oldQueries = Integer.parseInt(System.getProperty("org.apache.lucene.maxClauseCount", defaultQueries));
+                    int newQueries = oldQueries * 2;
+                    System.err.println("Too many hits for query: " + oldQueries + ".  Increasing to " + newQueries);
+                    System.setProperty("org.apache.lucene.maxClauseCount", Integer.toString(newQueries));
+                    BooleanQuery.setMaxClauseCount(newQueries);
+                    reTry = true;
+                }
             }
-
-            // 5. Score the docs
-            ScoreDoc[] retDocs = topDocs.scoreDocs;
-
-            for (int i = 0; i < retDocs.length; i++) {
-                rankedDocList.add(new ScoredDocument(is.doc(retDocs[i].doc).get("id"), is.doc(retDocs[i].doc), topDocs.scoreDocs[i].score));
-            }
-            // 6. Close the index
-            LuceneHelper.RAMIndex.close(iw);
+            // 7. Close the index
+            LuceneHelper.MemoryIndex.close(iw);
 
         } catch (IOException e) {
             e.printStackTrace();

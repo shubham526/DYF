@@ -1,11 +1,12 @@
 import help.LuceneHelper;
 import help.RankingHelper;
 import help.Utilities;
+import help.Utilities.EntityContextDocument;
+import help.Utilities.Pair;
 import me.tongfei.progressbar.ProgressBar;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.IndexSearcher;
-import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.json.JSONArray;
@@ -19,7 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 
-public class CreateEntitySimilarityData {
+public class CreateDataForSimFromRanking {
     private final Map<String, String> entityParaMap; // Map containing (entity_id, List(para_id)) where para_id --> contains link to entity_id
     private final Map<String, Set<String>> entityRankings;
     private final Map<String, String> queryIdToNameMap;
@@ -36,98 +37,21 @@ public class CreateEntitySimilarityData {
     private final String dataType;
 
 
-    /**
-     * Class to represent an Entity Context Document for an entity.
-     * @author Shubham Chatterjee
-     * @version 05/31/2020
-     */
-    public static class EntityContextDocument {
-
-        private final List<Document> documentList;
-        private final String entity;
-        private final List<String> contextEntities;
-
-        /**
-         * Constructor.
-         * @param documentList List of documents in the pseudo-document
-         * @param entity The entity for which the pseudo-document is made
-         * @param contextEntities The list of entities in the pseudo-document
-         */
-        @Contract(pure = true)
-        public EntityContextDocument(List<Document> documentList,
-                                     String entity,
-                                     List<String> contextEntities) {
-            this.documentList = documentList;
-            this.entity = entity;
-            this.contextEntities = contextEntities;
-        }
-
-        /**
-         * Method to get the list of documents in the ECD.
-         * @return String
-         */
-        public List<Document> getDocumentList() {
-            return this.documentList;
-        }
-
-        /**
-         * Method to get the entity of the ECD.
-         * @return String
-         */
-        public String getEntity() {
-            return this.entity;
-        }
-
-        /**
-         * Method to get the list of context entities in the ECD.
-         * @return ArrayList
-         */
-        public List<String> getEntityList() {
-            return this.contextEntities;
-        }
-    }
-
-    public static final class Pair<K, V> implements Map.Entry<K, V> {
-        private final K key;
-        private V value;
-
-        public Pair(K key, V value) {
-            this.key = key;
-            this.value = value;
-        }
-
-        @Override
-        public K getKey() {
-            return key;
-        }
-
-        @Override
-        public V getValue() {
-            return value;
-        }
-
-        @Override
-        public V setValue(V value) {
-            V old = this.value;
-            this.value = value;
-            return old;
-        }
-    }
 
 
 
-    public CreateEntitySimilarityData(String paraIndex,
-                                      String entityIndex,
-                                      String entityParaFile,
-                                      String entityRunFile,
-                                      String entityFile,
-                                      String queryIdToNameFile,
-                                      String entityIdToNameFile,
-                                      String stopWordsFile,
-                                      int topK,
-                                      String outFile,
-                                      String dataType,
-                                      boolean parallel) {
+    public CreateDataForSimFromRanking(String paraIndex,
+                                       String entityIndex,
+                                       String entityParaFile,
+                                       String entityRunFile,
+                                       String entityFile,
+                                       String queryIdToNameFile,
+                                       String entityIdToNameFile,
+                                       String stopWordsFile,
+                                       int topK,
+                                       String outFile,
+                                       String dataType,
+                                       boolean parallel) {
 
         this.parallel = parallel;
         this.topK = topK;
@@ -164,6 +88,8 @@ public class CreateEntitySimilarityData {
         System.out.print("Loading stop words....");
         stopWords = Utilities.getStopWords(stopWordsFile);
         System.out.println("[Done].");
+
+        System.out.println("Data Type: " + dataType);
 
         doTask();
 
@@ -292,60 +218,15 @@ public class CreateEntitySimilarityData {
         );
 
         Map<String, Object> doc1 = getDataForEntity(entityId, entitySupportPsg);
-//        doc1.put("entity_name", String.join(
-//                " ",
-//                RankingHelper.preProcess(
-//                        entityIdToNameMap.get(entityId),
-//                        stopWords
-//                )
-//        ));
-//        doc1.put("entity_desc", String.join(
-//                " ",
-//                RankingHelper.preProcess(
-//                        entitySupportPsg,
-//                        stopWords
-//                )
-//        ));
-//        doc1.put("entity_types", Utilities.getEntityCategories(entityId, entityIndexSearcher, stopWords));
 
 
         for (String relEntityId : relatedEntities.keySet()) {
             Map<String, Object> doc2 = getDataForEntity(relEntityId, relatedEntities.get(relEntityId));
-//            doc2.put("entity_name", String.join(
-//                    " ",
-//                    RankingHelper.preProcess(
-//                            entityIdToNameMap.get(relEntityId),
-//                            stopWords
-//                    )
-//            ));
-//            doc2.put("entity_desc", String.join(
-//                    " ",
-//                    RankingHelper.preProcess(
-//                            relatedEntities.get(relEntityId),
-//                            stopWords
-//                    )
-//            ));
-//            doc2.put("entity_types", Utilities.getEntityCategories(relEntityId, entityIndexSearcher, stopWords));
            dataStrings.add(toJSONString(query, doc1, doc2, 1));
         }
 
         for (String nonRelEntityId : nonRelatedEntities.keySet()) {
             Map<String, Object> doc2 = getDataForEntity(nonRelEntityId, nonRelatedEntities.get(nonRelEntityId));
-//            doc2.put("entity_name", String.join(
-//                    " ",
-//                    RankingHelper.preProcess(
-//                            entityIdToNameMap.get(nonRelEntityId),
-//                            stopWords
-//                    )
-//            ));
-//            doc2.put("entity_desc", String.join(
-//                    " ",
-//                    RankingHelper.preProcess(
-//                            nonRelatedEntities.get(nonRelEntityId),
-//                            stopWords
-//                    )
-//            ));
-//            doc2.put("entity_types", Utilities.getEntityCategories(nonRelEntityId, entityIndexSearcher, stopWords));
             dataStrings.add(toJSONString(query, doc1, doc2, 0));
         }
 
@@ -667,7 +548,7 @@ public class CreateEntitySimilarityData {
 
         if (dataType.equals("labelled") || dataType.equals("triplet")) {
 
-            new CreateEntitySimilarityData(paraIndex, entityIndex, entityPassageFile, entityRunFile, entityFile, queryIdToNameFile,
+            new CreateDataForSimFromRanking(paraIndex, entityIndex, entityPassageFile, entityRunFile, entityFile, queryIdToNameFile,
                     entityIdToNameFile, stopWordsFile, topK, outFile, dataType, parallel);
         } else {
             System.err.println("Data type must be `labelled` or `triplet`.");
@@ -676,6 +557,5 @@ public class CreateEntitySimilarityData {
 
     }
 }
-
 
 
