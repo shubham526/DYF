@@ -1,10 +1,12 @@
 import spacy
 import re
-from typing import List, Tuple
+from typing import List, Tuple, Any, Dict
 from spacy.tokens import Doc
 import string
 import gzip
-import tqdm
+from tqdm import tqdm
+import joblib
+import contextlib
 from pykson import Pykson, JsonObject, StringField, IntegerField, ListField, ObjectListField, ObjectField, Pykson, \
     BooleanField
 from object_models import Location, Entity, AnnotatedText, AspectLinkExample, Aspect, Context
@@ -90,22 +92,57 @@ def read_data(json_file: str, total: int) -> List[AspectLinkExample]:
     return examples
 
 
-def get_negative_doc_list(candidate_aspects: List[Aspect], true_aspect: str) -> List[Tuple[str, str]]:
+def get_entity_ids_only(entities) -> List[str]:
+    return [entity.entity_id for entity in entities]
+
+
+
+def get_negative_doc_list(candidate_aspects: List[Aspect], true_aspect: str) -> List[Tuple[str, Dict[str, Any]]]:
     processor = TextProcessor()
     return [
-        (aspect.aspect_id, processor.preprocess(aspect.aspect_content.content))
+        (
+            aspect.aspect_id,
+            {
+                'text':processor.preprocess(aspect.aspect_content.content),
+                'entities': get_entity_ids_only(aspect.aspect_content.entities)
+            }
+        )
         for aspect in candidate_aspects if aspect.aspect_id != true_aspect
     ]
 
 
-def get_positive_doc(candidate_aspects: List[Aspect], true_aspect: str) -> str:
+def get_positive_doc(candidate_aspects: List[Aspect], true_aspect: str) -> Dict[str, Any]:
     processor = TextProcessor()
-    doc_pos: str = ''
     for aspect in candidate_aspects:
         if aspect.aspect_id == true_aspect:
-            doc_pos = processor.preprocess(aspect.aspect_content.content)
-            break
+            doc_pos_text = processor.preprocess(aspect.aspect_content.content)
+            doc_pos_entities = get_entity_ids_only(aspect.aspect_content.entities)
+            return {
+                'text': doc_pos_text,
+                'entities': doc_pos_entities
+            }
 
-    return doc_pos
+
+
+@contextlib.contextmanager
+def tqdm_joblib(tqdm_object):
+    """
+    Context manager to patch joblib to report into tqdm progress bar given as argument
+    """
+    class TqdmBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+
+        def __call__(self, *args, **kwargs):
+            tqdm_object.update(n=self.batch_size)
+            return super().__call__(*args, **kwargs)
+
+    old_batch_callback = joblib.parallel.BatchCompletionCallBack
+    joblib.parallel.BatchCompletionCallBack = TqdmBatchCompletionCallback
+    try:
+        yield tqdm_object
+    finally:
+        joblib.parallel.BatchCompletionCallBack = old_batch_callback
+        tqdm_object.close()
 
 
