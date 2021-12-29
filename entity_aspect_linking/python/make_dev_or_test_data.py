@@ -27,7 +27,15 @@ totals = {
 
 def to_data(example: AspectLinkExample, context_type: str) -> List[str]:
     data: List[str] = []
-    query: str = processor.preprocess(example.context.sentence.content) if context_type == 'sent' else processor.preprocess(example.context.paragraph.content)
+    query: Dict[str, Any] = {
+        'text': processor.preprocess(
+            example.context.sentence.content) if context_type == 'sent' else processor.preprocess(
+            example.context.paragraph.content),
+        'entities': utils.get_entity_ids_only(
+            example.context.sentence.entities) if context_type == 'sent' else utils.get_entity_ids_only(
+            example.context.paragraph.entities)
+    }
+    # query: str = processor.preprocess(example.context.sentence.content) if context_type == 'sent' else processor.preprocess(example.context.paragraph.content)
     query_id: str = example.id
     doc_pos: str = utils.get_positive_doc(example.candidate_aspects, example.true_aspect)
     doc_pos_id: str = example.true_aspect
@@ -88,3 +96,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
