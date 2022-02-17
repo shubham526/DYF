@@ -38,15 +38,18 @@ def to_pairwise_data(example: AspectLinkExample, context_type: str) -> List[str]
         (doc_pos, doc_neg) for _, doc_neg in doc_neg_list
     ]
 
-    for doc_pos, doc_neg in documents:
-        data.append(
-            json.dumps({
-                'query': query,
-                'query_id': query_id,
-                'doc_pos': doc_pos,
-                'doc_neg': doc_neg
-            })
-        )
+    if doc_pos and len(doc_neg_list) >=1 and len(query['entities']) != 0:
+        for doc_pos, doc_neg in documents:
+            data.append(
+                json.dumps({
+                    'query': query,
+                    'query_id': query_id,
+                    'doc_pos': doc_pos,
+                    'doc_neg': doc_neg
+                })
+            )
+
+
     return data
 
 
@@ -64,19 +67,21 @@ def to_pointwise_data(example: AspectLinkExample, context_type: str) -> List[str
     query_id: str = example.id
     doc_pos: Dict[str, Any] = utils.get_positive_doc(example.candidate_aspects, example.true_aspect)
     doc_neg_list: List[Tuple[str, Dict[str, Any]]] = utils.get_negative_doc_list(example.candidate_aspects, example.true_aspect)
-    data.append(json.dumps({
-        'query': query,
-        'query_id': query_id,
-        'doc': doc_pos,
-        'label': 1
-    }))
-    for _, doc_neg in doc_neg_list:
+    if doc_pos and len(doc_neg_list) >= 1 and len(query['entities']) != 0:
         data.append(json.dumps({
             'query': query,
             'query_id': query_id,
-            'doc': doc_neg,
-            'label': 0
+            'doc': doc_pos,
+            'label': 1
         }))
+        for _, doc_neg in doc_neg_list:
+            data.append(json.dumps({
+                'query': query,
+                'query_id': query_id,
+                'doc': doc_neg,
+                'label': 0
+            }))
+
     return data
 
 
@@ -126,4 +131,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

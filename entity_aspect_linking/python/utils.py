@@ -85,7 +85,7 @@ def aspect_link_examples(json_file: str) -> AspectLinkExample:
 def read_data(json_file: str, total: int) -> List[AspectLinkExample]:
     examples: List[str] = []
     with gzip.open(json_file, 'rt', encoding='UTF-8') as zipfile:
-        for line in tqdm.tqdm(zipfile, total=total):
+        for line in tqdm(zipfile, total=total):
             example = Pykson().from_json(line, AspectLinkExample)
             examples.append(example)
 
@@ -99,16 +99,35 @@ def get_entity_ids_only(entities) -> List[str]:
 
 def get_negative_doc_list(candidate_aspects: List[Aspect], true_aspect: str) -> List[Tuple[str, Dict[str, Any]]]:
     processor = TextProcessor()
-    return [
-        (
-            aspect.aspect_id,
-            {
-                'text':processor.preprocess(aspect.aspect_content.content),
-                'entities': get_entity_ids_only(aspect.aspect_content.entities)
-            }
-        )
-        for aspect in candidate_aspects if aspect.aspect_id != true_aspect
-    ]
+    doc_list: List[Tuple[str, Dict[str, Any]]] = []
+    for aspect in candidate_aspects:
+        if aspect.aspect_id != true_aspect:
+            entities = get_entity_ids_only(aspect.aspect_content.entities)
+            if len(entities) != 0:
+                doc_list.append(
+                    (
+                        aspect.aspect_id,
+                        {
+                            'text': processor.preprocess(aspect.aspect_content.content),
+                            'entities': get_entity_ids_only(aspect.aspect_content.entities)
+                        }
+                    )
+                )
+            # else:
+            #     print('Empty entity list for negative AspectID: {}. Skipping.'.format(aspect.aspect_id))
+    return doc_list
+
+
+    # return [
+    #     (
+    #         aspect.aspect_id,
+    #         {
+    #             'text':processor.preprocess(aspect.aspect_content.content),
+    #             'entities': get_entity_ids_only(aspect.aspect_content.entities)
+    #         }
+    #     )
+    #     for aspect in candidate_aspects if aspect.aspect_id != true_aspect
+    # ]
 
 
 def get_positive_doc(candidate_aspects: List[Aspect], true_aspect: str) -> Dict[str, Any]:
@@ -117,10 +136,14 @@ def get_positive_doc(candidate_aspects: List[Aspect], true_aspect: str) -> Dict[
         if aspect.aspect_id == true_aspect:
             doc_pos_text = processor.preprocess(aspect.aspect_content.content)
             doc_pos_entities = get_entity_ids_only(aspect.aspect_content.entities)
-            return {
-                'text': doc_pos_text,
-                'entities': doc_pos_entities
-            }
+            if len(doc_pos_entities) != 0:
+                return {
+                    'text': doc_pos_text,
+                    'entities': doc_pos_entities
+                }
+            else:
+                # print('Empty entity list for positive AspectID: {}. Skipping.'.format(aspect.aspect_id))
+                return {}
 
 
 

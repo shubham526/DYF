@@ -41,22 +41,25 @@ def to_data(example: AspectLinkExample, context_type: str) -> List[str]:
     doc_pos_id: str = example.true_aspect
     doc_neg_list: List[Tuple[str, Dict[str, Any]]] = utils.get_negative_doc_list(example.candidate_aspects, example.true_aspect)
 
-    data.append(json.dumps({
-        'query': query,
-        'doc': doc_pos,
-        'label': 1,
-        'query_id': query_id,
-        'doc_id': doc_pos_id
-    }))
-
-    for doc_neg_id, doc_neg in doc_neg_list:
+    if doc_pos and len(doc_neg_list) >= 1 and len(query['entities']) != 0:
         data.append(json.dumps({
-        'query': query,
-        'doc': doc_neg,
-        'label': 0,
-        'query_id': query_id,
-        'doc_id': doc_neg_id
-    }))
+            'query': query,
+            'doc': doc_pos,
+            'label': 1,
+            'query_id': query_id,
+            'doc_id': doc_pos_id
+        }))
+
+        for doc_neg_id, doc_neg in doc_neg_list:
+            data.append(json.dumps({
+                'query': query,
+                'doc': doc_neg,
+                'label': 0,
+                'query_id': query_id,
+                'doc_id': doc_neg_id
+            }))
+
+
 
     return data
 
@@ -83,7 +86,7 @@ def write_to_file(data: List[str], output_file: str):
 
 
 def main():
-    parser = argparse.ArgumentParser("Create a training file.")
+    parser = argparse.ArgumentParser("Create a validation or test file.")
     parser.add_argument("--data", help="Data file.", required=True)
     parser.add_argument("--save", help="Output file.", required=True)
     parser.add_argument("--context", help="Type of context to use (sent|para). Default: paragraph context.",
@@ -96,4 +99,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
