@@ -19,8 +19,14 @@ import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
+/**
+ * Create training data for training context-dependent entity embeddings.
+ * Entity description: Entity Support Passage.
+ * Data created from: Entity Ranking.
+ */
 
-public class CreateDataForSimFromRanking {
+
+public class CreateTrainData {
     private final Map<String, String> entityParaMap; // Map containing (entity_id, List(para_id)) where para_id --> contains link to entity_id
     private final Map<String, Set<String>> entityRankings;
     private final Map<String, String> queryIdToNameMap;
@@ -40,18 +46,18 @@ public class CreateDataForSimFromRanking {
 
 
 
-    public CreateDataForSimFromRanking(String paraIndex,
-                                       String entityIndex,
-                                       String entityParaFile,
-                                       String entityRunFile,
-                                       String entityFile,
-                                       String queryIdToNameFile,
-                                       String entityIdToNameFile,
-                                       String stopWordsFile,
-                                       int topK,
-                                       String outFile,
-                                       String dataType,
-                                       boolean parallel) {
+    public CreateTrainData(String paraIndex,
+                           String entityIndex,
+                           String entityParaFile,
+                           String entityRunFile,
+                           String entityFile,
+                           String queryIdToNameFile,
+                           String entityIdToNameFile,
+                           String stopWordsFile,
+                           int topK,
+                           String outFile,
+                           String dataType,
+                           boolean parallel) {
 
         this.parallel = parallel;
         this.topK = topK;
@@ -548,7 +554,7 @@ public class CreateDataForSimFromRanking {
 
         if (dataType.equals("labelled") || dataType.equals("triplet")) {
 
-            new CreateDataForSimFromRanking(paraIndex, entityIndex, entityPassageFile, entityRunFile, entityFile, queryIdToNameFile,
+            new CreateTrainData(paraIndex, entityIndex, entityPassageFile, entityRunFile, entityFile, queryIdToNameFile,
                     entityIdToNameFile, stopWordsFile, topK, outFile, dataType, parallel);
         } else {
             System.err.println("Data type must be `labelled` or `triplet`.");
@@ -557,5 +563,6 @@ public class CreateDataForSimFromRanking {
 
     }
 }
+
 
 

@@ -16,12 +16,20 @@ import org.json.JSONException;
 import org.json.JSONObject;
 import static java.util.Map.entry;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * Data for creating embeddings from trained model.
+ * Data created from CIKM aspect linking data.
+ */
 
-public class CreateDataForEmbeddingsFromAspects {
+
+public class CreateEmbeddingData {
     private final List<AspectLinkExample> aspectLinkExamples;
     private final Map<String, String> entityParaMap; // Map containing (entity_id, List(para_id)) where para_id --> contains link to entity_id
     private final IndexSearcher paraIndexSearcher;
@@ -32,12 +40,13 @@ public class CreateDataForEmbeddingsFromAspects {
     private final AtomicInteger count = new AtomicInteger(0);
     private final boolean parallel;
     
-    CreateDataForEmbeddingsFromAspects(String paraIndex,
-                                       String entityIndex,
-                                       String entityParaFile,
-                                       String stopWordsFile,
-                                       String dataFile,
-                                       boolean parallel) {
+    CreateEmbeddingData(String paraIndex,
+                        String entityIndex,
+                        String entityParaFile,
+                        String stopWordsFile,
+                        String dataFile,
+                        String entityFile,
+                        boolean parallel) {
         
         this.parallel = parallel;
 
@@ -60,7 +69,12 @@ public class CreateDataForEmbeddingsFromAspects {
         System.out.print("Loading data...");
         aspectLinkExamples = Utilities.readJSONLFile(dataFile);
         System.out.println("[Done].");
+
+        System.out.print("Loading entities file...");
+        Map<String, String> entityMap = Utilities.readTsvFile(entityFile);
+        System.out.println("[Done].");
     }
+
 
     public void doTask(String outFile) {
         total = aspectLinkExamples.size();
@@ -97,10 +111,6 @@ public class CreateDataForEmbeddingsFromAspects {
 
     private void getData(@NotNull AspectLinkExample aspectLinkExample) {
 
-//        Map<String, String> context = new HashMap<>();
-//        context.put("id", aspectLinkExample.getId());
-//        context.put("text", aspectLinkExample.getContext().getSentenceContext().getContent());
-
         Map<String, String> context = Map.ofEntries(
                 entry("id", aspectLinkExample.getId()),
                 entry("text", String.join(
@@ -114,7 +124,15 @@ public class CreateDataForEmbeddingsFromAspects {
         List<Map<String, Object>> aspectEntityData = getAspectEntityData(aspectLinkExample);
         List<Map<String, Object>> contextEntityData = getContextEntityData(aspectLinkExample);
 
-        dataStrings.add(toJSONString(context, aspectEntityData, contextEntityData));
+        if (!aspectEntityData.isEmpty() && !contextEntityData.isEmpty()) {
+            dataStrings.add(toJSONString(context, aspectEntityData, contextEntityData));
+        } else {
+            if (aspectEntityData.isEmpty()) {
+                System.err.println("No aspect entities found. Skipping: " +  aspectLinkExample.getId());
+            } else  {
+                System.err.println("No context entities found. Skipping: " +  aspectLinkExample.getId());
+            }
+        }
 
         if (parallel) {
             count.getAndIncrement();
@@ -147,8 +165,12 @@ public class CreateDataForEmbeddingsFromAspects {
 
 
         for (Entity entity : contextEntityList) {
-            data.add(getDataForEntity(entity, sentenceContext));
-
+            Map<String, Object> entityData = getDataForEntity(entity, sentenceContext);
+            if (entityData != null) {
+                data.add(entityData);
+            } else {
+                System.out.println("ContextId: " + aspectLinkExample.getId() + " " + "No data for context entity: " + entity.getEntityId());
+            }
         }
         return data;
     }
@@ -164,9 +186,12 @@ public class CreateDataForEmbeddingsFromAspects {
         List<Entity> aspectEntityList = getAllEntitiesFromAspects(aspectLinkExample.getCandidateAspects());
 
         for (Entity entity : aspectEntityList) {
+            //if (!entity.getEntityId().equals("enwiki:Kapilavastu%20(ancient%20city)")) continue;
             Map<String, Object> entityData = getDataForEntity(entity, sentenceContext);
             if (entityData != null) {
                 data.add(entityData);
+            } else {
+                System.out.println("ContextId: " + aspectLinkExample.getId() + " " + "No data for aspect entity: " + entity.getEntityId());
             }
 
         }
@@ -226,9 +251,9 @@ public class CreateDataForEmbeddingsFromAspects {
                     }
                 }
             }
-//            else {
-//                System.out.println("No paragraphs found for entity: " + entityId);
-//            }
+            else {
+                System.out.println("No paragraphs found for entity: " + entityId);
+            }
         } catch (JSONException e) {
             e.printStackTrace();
         }
@@ -409,14 +434,16 @@ public class CreateDataForEmbeddingsFromAspects {
         String entityParaFile = args[2];
         String stopWordsFile = args[3];
         String dataFile = args[4];
-        String outFile = args[5];
-        boolean parallel = args[6].equals("true");
+        String entityFile = args[5];
+        String outFile = args[6];
+        boolean parallel = args[7].equals("true");
 
-        CreateDataForEmbeddingsFromAspects ob = new CreateDataForEmbeddingsFromAspects(
-                paraIndex, entityIndex, entityParaFile, stopWordsFile, dataFile, parallel
+        CreateEmbeddingData ob = new CreateEmbeddingData(
+                paraIndex, entityIndex, entityParaFile, stopWordsFile, dataFile, entityFile, parallel
         );
 
         ob.doTask(outFile);
     }
 
 }
+
