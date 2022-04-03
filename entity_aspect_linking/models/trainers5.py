@@ -27,48 +27,27 @@ class Trainer:
             # Makes predictions and compute loss
             if self._model_type == 'pairwise':
                 batch_score_pos = self._model(
-                    context_input_ids=train_batch[ 'context_input_ids'].to(self._device),
-                    context_attention_mask=train_batch['context_attention_mask'].to(self._device),
                     context_inputs_embeds=train_batch['context_entity_embeddings'].to(self._device),
-                    aspect_input_ids=train_batch['aspect_input_ids_pos'].to(self._device),
-                    aspect_attention_mask=train_batch['aspect_attention_mask_pos'].to(self._device),
                     aspect_inputs_embeds=train_batch['aspect_entity_embeddings_pos'].to(self._device),
                 )
 
                 batch_score_neg = self._model(
-                    context_input_ids=train_batch['context_input_ids'].to(self._device),
-                    context_attention_mask=train_batch['context_attention_mask'].to(self._device),
                     context_inputs_embeds=train_batch['context_entity_embeddings'].to(self._device),
-                    aspect_input_ids=train_batch['aspect_input_ids_neg'].to(self._device),
-                    aspect_attention_mask=train_batch['aspect_attention_mask_neg'].to(self._device),
                     aspect_inputs_embeds=train_batch['aspect_entity_embeddings_neg'].to(self._device),
                 )
 
-                # if isinstance(batch_score_pos.tolist(), float) or isinstance(batch_score_neg.tolist(), float):
-                #     return 0.0
 
                 batch_score_pos = batch_score_pos.tanh()
                 batch_score_neg = batch_score_neg.tanh()
                 targets = torch.ones(batch_score_pos.size())
-
                 batch_loss = self._criterion(batch_score_pos, batch_score_neg, targets).to(self._device)
 
-                # batch_loss = self._criterion(
-                #     batch_score_pos.tanh(),
-                #     batch_score_neg.tanh(),
-                #     torch.ones(batch_score_pos.size()).to(self._device)
-                # )
 
             elif self._model_type == 'pointwise':
                 batch_score = self._model(
-                    context_input_ids=train_batch['context_input_ids'].to(self._device),
-                    context_attention_mask=train_batch['context_attention_mask'].to(self._device),
                     context_inputs_embeds=train_batch['context_entity_embeddings'].to(self._device),
-                    aspect_input_ids=train_batch['aspect_input_ids'].to(self._device),
-                    aspect_attention_mask=train_batch['aspect_attention_mask'].to(self._device),
                     aspect_inputs_embeds=train_batch['aspect_entity_embeddings'].to(self._device),
                 )
-
                 batch_loss = self._criterion(batch_score, train_batch['label'].float().to(self._device))
             else:
                 raise ValueError('Model type must be `pairwise` or `pointwise`.')
@@ -90,7 +69,7 @@ class Trainer:
         train_step = self.make_train_step()
         epoch_loss = 0
         num_batch = len(self._data_loader)
-        # print('Number of batches = {}'.format(num_batch))
+
         for _, batch in tqdm.tqdm(enumerate(self._data_loader), total=num_batch):
             if batch is not None:
                 batch_loss = train_step(batch)

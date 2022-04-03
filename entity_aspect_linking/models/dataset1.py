@@ -238,8 +238,8 @@ class AspectLinkWithQuerySpecificEntityEmbeddingDataset(AspectLinkDataset):
                     entities=example['doc']['entities']
                 )
 
-                if len(context_entity_embeddings) == 0 or len(aspect_entity_embeddings) == 0:
-                    return {}
+                # if len(context_entity_embeddings) == 0 or len(aspect_entity_embeddings) == 0:
+                #     return {}
 
                 return {
                     'context_input_ids': context_input_ids,

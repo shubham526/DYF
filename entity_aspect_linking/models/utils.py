@@ -4,7 +4,6 @@ import pytrec_eval
 import torch
 import torch.nn as nn
 import tqdm
-from dataset import AspectLinkDataset
 from dataloader import AspectLinkDataLoader
 
 
@@ -146,6 +145,32 @@ def evaluate2(model, data_loader, device):
                     aspect_entity_desc_input_ids=dev_batch['aspect_entity_desc_input_ids'],
                     aspect_entity_desc_attention_mask=dev_batch['aspect_entity_desc_attention_mask'],
                     aspect_entity_wiki2vec_embeddings=dev_batch['aspect_entity_wiki2vec_embeddings'],
+                )
+
+                batch_score = batch_score.detach().cpu().tolist()
+                for (q_id, d_id, b_s, l) in zip(query_id, doc_id, batch_score, label):
+                    if q_id not in rst_dict:
+                        rst_dict[q_id] = {}
+                    if d_id not in rst_dict[q_id] or b_s > rst_dict[q_id][d_id][0]:
+                        rst_dict[q_id][d_id] = [b_s, l]
+
+    return rst_dict
+
+
+def evaluate5(model, data_loader, device):
+    rst_dict = {}
+    model.eval()
+
+    num_batch = len(data_loader)
+
+    with torch.no_grad():
+        for dev_batch in tqdm.tqdm(data_loader, total=num_batch):
+            if dev_batch is not None:
+                query_id, doc_id, label = dev_batch['query_id'], dev_batch['doc_id'], dev_batch['label']
+
+                batch_score = model(
+                    context_inputs_embeds=dev_batch['context_entity_embeddings'].to(device),
+                    aspect_inputs_embeds=dev_batch['aspect_entity_embeddings'].to(device),
                 )
 
                 batch_score = batch_score.detach().cpu().tolist()

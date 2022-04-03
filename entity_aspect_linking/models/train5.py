@@ -10,11 +10,11 @@ import metrics
 import warnings
 import argparse
 from typing import Tuple
-from dataset1 import AspectLinkWithQuerySpecificEntityEmbeddingDataset, AspectLinkWithQueryIndependentEntityEmbeddingDataset
+from dataset5 import AspectLinkDataset
 from torch.utils.data import Dataset
-from model1 import AspectLinkModel
+from model5 import AspectLinkModel
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
-from trainers1 import Trainer
+from trainers5 import Trainer
 from dataloader import AspectLinkDataLoader
 
 
@@ -32,7 +32,7 @@ def train(model, trainer, epochs, metric, qrels, valid_loader, save_path, save, 
         # Validate
         if (epoch + 1) % eval_every == 0:
             print('Running validation...')
-            res_dict = utils.evaluate1(
+            res_dict = utils.evaluate5(
                 model=model,
                 data_loader=valid_loader,
                 device=device
@@ -75,7 +75,6 @@ def main():
     parser.add_argument('--run', help='Output run file in TREC format. Default: bert.trec.run', default='bert.trec.run',
                         type=str)
     parser.add_argument('--metric', help='Metric to use for evaluation. Default: map', default='map', type=str)
-    parser.add_argument('--score-method', help='Similarity method to use (linear|bilinear|cosine)', default='bilinear', type=str)
     parser.add_argument('--epoch', help='Number of epochs. Default: 20', type=int, default=20)
     parser.add_argument('--batch-size', help='Size of each batch. Default: 8.', type=int, default=8)
     parser.add_argument('--learning-rate', help='Learning rate. Default: 2e-5.', type=float, default=2e-5)
@@ -143,7 +142,6 @@ def main():
         'Max Input': args.max_len,
         'Model': pretrain,
         'Metric': args.metric,
-        'Score Method': args.score_method,
         'Epochs': args.epoch,
         'Batch Size': args.batch_size,
         'Learning Rate': args.learning_rate,
@@ -157,7 +155,7 @@ def main():
 
     if args.entity_emb_type == 'specific':
         print('Creating train set...')
-        train_set = AspectLinkWithQuerySpecificEntityEmbeddingDataset(
+        train_set = AspectLinkDataset(
             dataset=args.train,
             tokenizer=tokenizer,
             train=True,
@@ -167,7 +165,7 @@ def main():
         )
         print('[Done].')
         print('Creating validation set...')
-        dev_set = AspectLinkWithQuerySpecificEntityEmbeddingDataset(
+        dev_set = AspectLinkDataset(
             dataset=args.dev,
             tokenizer=tokenizer,
             train=False,
@@ -178,7 +176,7 @@ def main():
         print('[Done].')
     else:
         print('Creating train set...')
-        train_set = AspectLinkWithQueryIndependentEntityEmbeddingDataset(
+        train_set = AspectDataset(
             dataset=args.train,
             tokenizer=tokenizer,
             train=True,
@@ -188,7 +186,7 @@ def main():
         )
         print('[Done].')
         print('Creating validation set...')
-        dev_set = AspectLinkWithQueryIndependentEntityEmbeddingDataset(
+        dev_set = AspectLinkDataset(
             dataset=args.dev,
             tokenizer=tokenizer,
             train=False,
@@ -219,7 +217,7 @@ def main():
 
     print('Model Type: ' + args.model_type)
 
-    model = AspectLinkModel(pretrained=pretrain, entity_emb_dim=args.entity_emb_dim, score_method=args.score_method)
+    model = AspectLinkModel(pretrained=pretrain, entity_emb_dim=args.entity_emb_dim)
 
     if args.model_type == 'pairwise':
         loss_fn = nn.MarginRankingLoss(margin=1)
